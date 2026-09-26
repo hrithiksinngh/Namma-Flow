@@ -1,0 +1,27 @@
+# Minimum versions are the lowest releases that provide every API the code uses; the exact
+# versions the project is tested with are pinned in constraints.txt:
+#   pip install -r requirements.txt -c constraints.txt
+# The pinned stack needs Python >= 3.12 (tested on 3.13.12, see pyproject.toml); the floors alone
+# resolve on Python 3.11 (osmnx 2.1.x needs >= 3.11) but that combination is untested.
+torch>=2.4.0                 # torch.load(weights_only=True) checkpoints / dataset payloads
+torch-geometric>=2.4.0       # GATv2Conv(edge_dim=...)
+osmnx>=2.1.1                 # 2.1.1 checks its response cache BEFORE _http._config_dns (offline cache replay);
+                             # bbox=(west, south, east, north); settings.requests_timeout / overpass_url / http_user_agent
+networkx>=3.1
+rasterio>=1.3.8
+geopandas>=1.0.0             # GeoSeries.union_all()
+numpy>=1.24.0
+pandas>=2.2.0                # lowercase "h" frequency alias, DatetimeIndex.as_unit, ISO8601 parsing
+scikit-learn>=1.3.0          # HistGradientBoostingClassifier / LogisticRegression baselines
+streamlit>=1.52.0            # st.metric(delta_arrow=) 1.52, width="stretch" on charts 1.51, :color-badge[] 1.44, st.segmented_control 1.40
+altair>=5.0.0                # imported directly by app/components.py
+pydeck>=0.8.0
+pyyaml>=6.0.1
+requests>=2.31.0
+scipy>=1.11.0
+shapely>=2.0.0               # STRtree.query_nearest, shapely.make_valid
+pyproj>=3.6.0
+
+# Development / testing
+pytest>=7.4.0
+pytest-cov>=4.1.0

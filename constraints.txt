@@ -1,0 +1,31 @@
+# Exact package versions the Namma-Flow pipeline, app and test suite were tested with
+# (Python 3.13.12, macOS arm64; these pins need Python >= 3.12). Use together with requirements.txt:
+#   pip install -r requirements.txt -c constraints.txt
+# `make test` only reports drift from these pins; `make check-env` (NAMMA_FLOW_STRICT_ENV=1) enforces them.
+affine==3.0.1
+altair==6.3.0
+coverage==7.16.1
+geopandas==1.1.4
+Jinja2==3.1.6
+jsonschema==4.26.0
+narwhals==2.26.0
+networkx==3.7
+numpy==2.5.3
+osmnx==2.1.1
+pandas==3.0.6
+protobuf==7.36.2
+pyarrow==25.0.1
+pydeck==0.9.3
+pyogrio==0.13.0
+pyproj==3.8.0
+pytest==9.1.1
+pytest-cov==7.1.0
+PyYAML==6.0.3
+rasterio==1.5.1
+requests==2.34.2
+scikit-learn==1.9.1
+scipy==1.18.1
+shapely==2.1.2
+streamlit==1.64.0
+torch==2.14.0
+torch-geometric==2.8.0.post1

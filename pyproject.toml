@@ -1,0 +1,25 @@
+[project]
+name = "namma-flow"
+version = "1.0.0"
+description = "Predictive urban micro-flooding with spatio-temporal graph neural networks (Bengaluru pilot)"
+# The pinned stack (constraints.txt: numpy 2.5, scipy 1.18, networkx 3.7, pyproj 3.8, rasterio 1.5) needs
+# Python >= 3.12; tested on 3.13.12. Keep equal to MIN_PYTHON in the Makefile.
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "unit: fast isolated tests",
+    "integration: multi-module tests (offline, synthetic data)",
+    "e2e: full pipeline / app tests",
+    "network: requires internet access (skipped unless NAMMA_FLOW_NETWORK_TESTS=1)",
+]
+filterwarnings = [
+    "ignore::FutureWarning",
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["src", "app"]
+omit = ["*/__init__.py"]

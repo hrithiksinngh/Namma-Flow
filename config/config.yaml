@@ -1,0 +1,290 @@
+# Namma-Flow pipeline configuration.
+# Every path is relative to the project root unless absolute.
+# Every section except project and paths is optional in code (modules carry defaults); values here override them.
+
+project:
+  name: "Namma-Flow"
+  region: "Bellandur, Bengaluru, Karnataka, India"
+  timezone: "Asia/Kolkata"
+  seed: 42
+  offline: false            # true (or env NAMMA_FLOW_OFFLINE=1) => never touch the network
+
+paths:
+  dem_dir: "data/raw/dem"
+  weather_dir: "data/raw/weather"
+  labels_dir: "data/raw/labels"
+  interim_dir: "data/interim"
+  processed_dir: "data/processed"
+  graph_file: "data/interim/bellandur_osm.graphml"
+  waterways_file: "data/interim/waterways.geojson"
+  weather_file: "data/raw/weather/open_meteo_hourly.csv"
+  flood_reports_file: "data/raw/labels/flood_reports.csv"
+  train_dataset: "data/processed/train_dataset.pt"
+  val_dataset: "data/processed/val_dataset.pt"
+  test_dataset: "data/processed/test_dataset.pt"   # held-out test split (dataset.test_years); absent if test_years: []
+  checkpoint_dir: "artifacts/checkpoints"
+  reports_dir: "artifacts/reports"
+  osm_cache_dir: "data/interim/osm_cache"
+
+region:
+  # [west, south, east, north] in EPSG:4326 — Bellandur / Outer Ring Road pilot corridor.
+  bbox: [77.655, 12.915, 77.700, 12.950]
+  use_place_query: true     # try geocoding project.region first, fall back to bbox
+  max_place_area_km2: 60.0  # reject geocoded polygons larger than this (wrong match)
+  min_place_nodes: 50       # reject place graphs smaller than this (e.g. geocoder hit the lake polygon)
+  drain_fallback_lon: 77.6750  # synthetic north-south rajakaluve line used when OSM waterways are unavailable
+
+network:
+  network_type: "drive"
+  simplify: true
+  bidirectional: true       # add a reverse edge for every street segment: runoff ignores one-way rules
+  keep_largest_component: true
+  min_nodes: 20
+  min_edge_length_m: 1.0
+  default_edge_length_m: 25.0
+  request_timeout_s: 180
+  overpass_urls:            # Overpass endpoints tried in order for the road and waterway queries (public mirrors)
+    - "https://overpass-api.de/api"
+    - "https://maps.mail.ru/osm/tools/overpass/api"
+  overpass_max_attempts: 2  # a mirror answering HTTP 429/504 (busy) is given up after this many attempts
+  overpass_retry_pause_s: 30  # wait between those attempts (osmnx alone would retry forever)
+  osm_date: null            # e.g. "2026-09-23T12:50:49Z" pins the Overpass queries to that OSM snapshot (attic query)
+  synthetic_grid:           # offline fallback network (regular street grid over the bbox)
+    rows: 20
+    cols: 20
+
+elevation:
+  sources: ["local", "srtm", "open_meteo", "synthetic"]   # tried in order
+  srtm_url_template: "https://s3.amazonaws.com/elevation-tiles-prod/skadi/{lat_band}/{tile}.hgt.gz"
+  open_meteo_url: "https://api.open-meteo.com/v1/elevation"
+  open_meteo_batch_size: 100
+  valid_range_m: [600.0, 1200.0]   # Bengaluru plateau sanity band; samples outside are voids
+  tpi_radius_m: 300.0              # neighbourhood radius for relative elevation (topographic position index)
+  max_abs_grade: 0.3
+  request_timeout_s: 60
+  max_retries: 3
+  backoff_s: 2.0
+  max_void_fraction: 0.5           # reject a source when more than this share of nodes are voids
+  void_fill_k: 8                   # nearest valid nodes used to fill a void (inverse-distance weights)
+  dem_margin_deg: 0.01             # SRTM clip margin around the bbox
+  max_srtm_tiles: 9                # refuse bboxes needing more 1-degree tiles than this
+  refresh_dem: false               # true (or CLI --refresh-dem) ignores cached SRTM GeoTIFFs/tiles
+
+drains:
+  osm_tags:                        # replaces the default filter as a whole (keys are not merged)
+    waterway: ["drain", "canal", "stream", "river", "ditch"]
+    natural: ["water"]
+  exclude_water_values: ["wastewater", "reflecting_pool", "swimming_pool", "pool", "fountain"]  # water=* that is not storm water
+  max_distance_m: 5000.0           # distances are clipped to this value
+  bbox_margin_deg: 0.02            # query waterways beyond the bbox so edge junctions see nearby drains/lakes
+  min_polygon_area_m2: 1000.0      # ignore tiny water polygons (fountains, tanks)
+  request_timeout_s: 180
+  refresh: false                   # true (or CLI --refresh-drains) ignores the cached GeoJSON
+
+weather:
+  provider: "open_meteo"
+  archive_url: "https://archive-api.open-meteo.com/v1/archive"
+  forecast_url: "https://api.open-meteo.com/v1/forecast"
+  previous_runs_url: "https://previous-runs-api.open-meteo.com/v1/forecast"   # archived forecasts (backtests; data from ~2024)
+  start_date: "2018-01-01"
+  end_date: "2024-12-31"
+  chunk_days: 366
+  timeout_s: 60
+  max_retries: 3
+  backoff_s: 2.0
+  max_fill_gap_hours: 6            # gaps up to this length are filled (0 mm, flagged); longer gaps are flagged and logged
+  max_precip_mm_h: 150.0           # physical plausibility clip
+  bias_correction_factor: 1.0      # multiply reanalysis rainfall (ERA5 under-represents convective peaks)
+  forecast_past_days: 2
+  forecast_days: 3
+  synthetic_scale: "areal"         # offline fallback climatology: areal (ERA5-like, what the pipeline is calibrated on) | point (gauge-like)
+
+rainfall_field:                    # stochastic convective downscaling of areal rain to individual junctions
+  # Moving-cell / cell-lifecycle model (src/data_pipeline/rain_field.py); calibrated with the
+  # hydrology section (python -m src.hydrology.calibrate): junction-rain CV in wet hours ~0.46.
+  enabled: true
+  n_cells: 3                       # convective cell slots per storm (one cell-equivalent each at any time)
+  cell_radius_m: [400.0, 1200.0]   # Gaussian cell radius (standard deviation)
+  advection_speed_mps: [1.0, 6.0]  # storm steering speed (random heading per event)
+  cell_lifetime_h: 2.0             # growth-maturity-dissipation cycle; a new cell per slot every half-lifetime
+  background_fraction: 0.2         # stratiform (uniform) share of light rain ...
+  stratiform_rate_mm_h: 2.0        # ... falling as r0 / (r0 + areal) for heavier hours (null = constant share)
+  normalise_intensity: true        # most-affected junction of a wet hour reaches the strongest cell's amplitude
+  amplitude_range: [0.5, 1.0]
+  multiplier_clip: [0.05, 4.0]     # junction rain / areal rain bounds
+  domain_margin_factor: 0.5        # mature cells lie within the corridor bbox grown by this x max radius
+  substeps_per_hour: 4
+  seed: 42
+  max_dry_gap_h: 2                 # dry hours allowed inside one rain event (events seed the cells)
+
+hydrology:                         # physics surrogate ("teacher") that produces flood labels
+  # Calibrated on the real graph + 2018-2024 Open-Meteo record (python -m src.hydrology.calibrate:
+  # criteria a-h all pass). Effective values for reanalysis-scale rain (ERA5 smooths convective bursts).
+  catchment_width_m: 30.0          # contributing strip width along each street segment (A = width x half incident length)
+  runoff_coeff_dry: 0.70
+  runoff_coeff_wet: 0.80
+  antecedent_window_h: 24
+  antecedent_saturation_mm: 20.0   # junction rain over the antecedent window that fully wets the catchment
+  drain_capacity_near_mm_h: 17.5   # inlet drainage capacity (per unit catchment) next to a rajakaluve / lake
+  drain_capacity_far_mm_h: 13.4    # inlet drainage capacity far from any mapped drain
+  drain_decay_m: 450.0
+  surcharge_local_weight: 1.0      # drain loading = contributing-area rain (1) ... basin-mean rain (0 = legacy switch)
+  surcharge_window_h: 6            # time of concentration over which drain loading accumulates
+  surcharge_threshold_mm: 4.1      # local drain reach surcharges above this contributing-area rain ...
+  surcharge_ramp_mm: 3.4           # ... and is fully surcharged this many mm later
+  surcharge_min_factor: 0.055      # drains keep this share of capacity when fully surcharged
+  tailwater_threshold_mm: 3.7      # backwater needs corridor-mean rain over the window above this (trunk drains / lake up)
+  tailwater_ramp_mm: 1.3
+  routing_exponent: 1.0            # multiple-flow-direction slope exponent
+  outflow_rate_per_h: 1.5          # linear-reservoir outflow coefficient at 1 % grade (fraction capped at 1)
+  min_routing_grade: 0.0022
+  ponding_fraction: 0.026          # fraction of catchment that can pond at the junction
+  infiltration_mm_h: 1.9
+  spill_depth_m: 0.55              # deeper water leaves the road network overland (null = no cap)
+  flood_depth_threshold_m: 0.15    # junction counts as flooded above this depth
+
+labels:
+  source: "simulated"              # simulated | observed | hybrid
+  report_snap_radius_m: 150.0
+  report_window_hours: 3
+  min_report_severity: 1           # ignore observed reports below this severity (1 minor, 2 moderate, 3 severe)
+
+dataset:
+  season_months: [5, 6, 7, 8, 9, 10, 11]   # SW + NE monsoon
+  seq_len: 16                      # hours per training sequence
+  warmup_steps: 4                  # first steps only warm the GRU state (not scored): 12 scored steps per window
+  lookback_hours: 24               # rain history needed for the longest rolling sum
+  rolling_windows_h: [3, 6, 12, 24]
+  train_stride_h: 6
+  val_stride_h: 12                 # val/test stride = seq_len - warmup_steps: scored hours tile without overlap
+  val_years: [2022]                # validation year: model selection, early stopping, calibration, threshold
+  test_years: [2024]               # held-out test year (reported metrics); [] => no test split
+  wet_window_min_mm: 5.0           # keep a window if its areal rainfall total reaches this
+  dry_window_keep_frac: 0.05       # keep this share of dry windows as easy negatives
+  # Terrain descriptors per junction. flow_accumulation (log1p-scaled) and is_sink encode where runoff
+  # converges; without them a smooth network cannot resolve each junction's flood threshold (probe:
+  # graph-free MLP val PR-AUC 0.56 -> 0.91 when they are added).
+  static_features: ["elevation", "dist_to_drain_m", "relative_elevation", "flow_accumulation", "is_sink"]
+  edge_features: ["length", "grade"]
+  scaler_max_samples: 2000000      # node-hour samples (train windows) used to fit the dynamic feature scaler
+  seed: null                       # null => project.seed (dry-window sampling, scaler subsample)
+
+model:
+  architecture: "gatv2_gru"        # gatv2_gru (spec) | a3t_gcn
+  node_in_dim: 10                  # = len(dataset.static_features) + 1 + len(dataset.rolling_windows_h)
+  edge_dim: 2
+  hidden_dim: 64
+  heads: 2
+  dropout: 0.2
+  # forward_sequence performance knobs (results are identical to the per-hour loop; chosen by benchmark)
+  spatial_chunk: 12                # max hours per stacked GATv2 call (1 = naive per-hour loop)
+  max_chunk_edges: 180000          # memory cap: stacked edges per GATv2 call (big batches use fewer hours)
+  gradient_checkpointing: true     # true | false | auto (auto: recompute activations only when a batch would need > ~2.5 GB). true keeps training at ~1.3 GB RSS on a busy 16 GB laptop; results are identical
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  batch_size: 16
+  epochs: 60
+
+loss:
+  name: "focal"                    # focal | weighted_bce
+  gamma: 2.0
+  alpha: 0.85
+  pos_weight: null                 # weighted_bce only; null => derived from the training class ratio
+
+training:
+  device: "auto"                   # auto | cpu | cuda | mps
+  num_threads: null                # torch intra-op threads; null => torch default
+  windows_per_epoch: 512           # sampled per epoch (null => every window): 32 optimizer steps of model.batch_size
+  micro_batch_size: 4              # windows per forward/backward; gradients accumulate to model.batch_size (identical step, ~1.5x faster on CPU)
+  positive_oversample: 3.0         # sampling weight of windows containing at least one flood
+  max_val_windows: null            # evenly spaced val windows scored per epoch (null => all)
+  grad_clip_norm: 1.0              # null disables clipping
+  early_stopping_patience: 10
+  early_stopping_metric: "pr_auc"  # pr_auc | roc_auc | f2 | val_loss (falls back to val_loss if val has no floods)
+  min_delta: 0.001                 # an epoch must beat the best by more than this to count as an improvement ...
+  min_delta_mode: "rel"            # ... as a fraction of the best (rel; rare-event PR-AUC is ~1e-3) or absolutely (abs)
+  lr_scheduler:
+    factor: 0.5
+    patience: 4
+    min_lr: 1.0e-5
+  threshold_metric: "f2"           # f1 | f2 | f0.5 | csi | mcc | youden; recall-weighted: a missed flood costs more than a false alarm
+  calibration: "platt"             # platt (sigmoid(a*logit + b)) | temperature | none; fitted on the validation split
+  calibrate_temperature: true      # legacy switch: false disables calibration (same as calibration: none)
+  resume: false
+  seed: null                       # null => project.seed
+  max_nonfinite_steps: 3           # abort after this many consecutive NaN/inf losses or gradients
+  reliability_bins: 10             # calibration-curve bins in metrics.json
+  baseline:                        # graph-free, memory-free models on the same-hour node features
+    enabled: true
+    max_samples: 200000            # training node-steps (all floods up to half, the rest random dry ones)
+    max_train_windows: 400
+    hist_gbdt:                     # non-linear baseline (sklearn HistGradientBoostingClassifier) next to the logistic one
+      enabled: true
+      max_iter: 200
+      learning_rate: 0.1
+      max_leaf_nodes: 31
+      min_samples_leaf: 20
+  areal_skill:                     # skill when only corridor-average rain is known -> reports_dir/areal_skill.json
+    enabled: true                  # computed after the test evaluation, published with best.pt (never fails training)
+    members: 32                    # independent rain-field realisations averaged (seeds never reuse the label seed);
+                                   # also used to choose the areal serving threshold - keep equal to inference.field_members
+
+inference:
+  horizons_h: [12, 24, 36, 48]
+  mc_dropout_samples: 20           # default MC-dropout passes when uncertainty is requested (CLI --mc)
+  max_mc_samples: 200              # refuse larger requests (runtime grows linearly)
+  batch_windows: 8                 # seq_len windows per forward pass (memory knob; results identical)
+  history_hours: 48                # rain history before the first predicted hour (>= lookback_hours + warmup_steps;
+                                   # shorter => WARNING at model load + dry padding flagged in the app / CLI)
+  checkpoint_name: "best.pt"       # file in paths.checkpoint_dir loaded by FloodPredictor
+  num_threads: null                # torch intra-op threads for inference; null => torch default
+  physics_softness_m: 0.03         # physics baseline: p = sigmoid((depth - flood threshold) / softness); p(dry) = 0.7 %
+  max_scenario_hours: 336          # longest replay / what-if target period (14 days)
+  max_event_backfill_h: 168        # replays start at the beginning of an in-progress rain event (exact training rain field)
+  notable_event_window_h: 24       # "wettest N-hour periods" listed for the replay picker
+  notable_event_separation_h: 72   # minimum spacing between listed events
+  backtest_spinup_h: 72            # hydrologic spin-up fetched before a backtest period
+  max_backtest_days: 120
+  design_storm_shape: "chicago"    # chicago | triangular | uniform
+  design_storm_peak_position: 0.4
+  design_storm_offset_h: 6         # storm starts this many hours after the first predicted hour
+  # Design-storm totals are point (rain-gauge) amounts; the model and the hydrology were calibrated on
+  # ERA5 areal rain, which smooths convective storms several-fold (Sept 2022: ~130 mm at gauges in 24 h vs
+  # ~22 mm of ERA5 areal rain over the same 24 h; 0.14 = the 17.9 mm 16:00-20:00 burst / 130 mm, a
+  # same-24 h ratio would be ~0.17). Hyetographs are multiplied by this factor (1.0 = as given).
+  design_storm_rain_scale: 0.14
+  # What-if junction rain is drawn on a canonical time axis on which the storm starts at this local hour, so the
+  # same storm puts the same convective cells over the same junctions at any wall-clock time / storm offset.
+  design_storm_field_anchor: "2000-01-01T00:00"
+  # Rain-field ensemble: training labels come from ONE stochastic junction rain field per event. Replays reproduce it;
+  # forecasts / design storms / custom series know only corridor-average rain, so predictions average over this many
+  # independent field realisations (member k at seed offset o uses rainfall_field.seed + (o + k) * stride).
+  field_members: 32                # rain-field realisations averaged for forecasts / what-if storms; skill saturates
+                                   # near 32 (test 2024 PR-AUC: 0.62 at 8, 0.66 at 16, 0.67 at 32, 0.67 at 64); ~4 s per 48 h forecast
+  field_seed_stride: 7919
+  risk_tiers:                      # lower probability bound of each tier
+    low: 0.0
+    moderate: 0.25
+    high: 0.5
+    severe: 0.75
+  design_storms:
+    - {name: "Moderate shower (30 mm in 3 h)", total_mm: 30.0, duration_h: 3}
+    - {name: "Heavy downpour (80 mm in 3 h)", total_mm: 80.0, duration_h: 3}
+    - {name: "Cloudburst (130 mm in 6 h, Sept-2022 analogue)", total_mm: 130.0, duration_h: 6}
+
+app:                               # streamlit run app/app.py
+  map_style: "light"               # light | dark | road (Carto basemaps, no token required)
+  column_radius_m: 22              # junction column / disc radius (m)
+  elevation_scale: 4               # column height = probability x 100 x this (m): p = 1 -> 400 m
+  top_k: 15                        # rows in the riskiest-junctions table
+  map_height_px: 560
+  default_mode: "forecast"         # forecast | historical | design (sidebar mode on first load)
+  notable_events: 12               # wettest 24 h periods offered by the replay picker
+  color_scale: "auto"              # auto | tiers | relative (auto: tiers once some junction reaches the 2nd tier)
+  pitch_deg: 45                    # camera tilt in 3D mode
+  forecast_ttl_s: 1800             # live forecast (and a failed fetch) is cached this long; sidebar Refresh clears it
+  forecast_timeout_s: 20           # per-request timeout for the app's forecast fetch (keeps the UI responsive)
+  forecast_max_retries: 2
+  max_mc_samples_ui: 50            # MC-dropout slider maximum (also capped by inference.max_mc_samples)
+  custom_storm_max_mm: 250         # custom what-if storm slider ranges
+  custom_storm_max_h: 24

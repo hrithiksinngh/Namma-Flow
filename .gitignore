@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Downloaded / generated data (empty directories are kept through .gitkeep placeholders)
+data/raw/dem/*.tif
+data/raw/dem/*.tiff
+data/raw/dem/*.hgt*
+data/raw/weather/*.csv
+data/raw/weather/*.meta.json
+data/interim/*
+data/processed/*
+!data/**/.gitkeep
+
+# Checkpoints, reports and other run outputs ("artifacts/*", not "artifacts/", so the
+# placeholder below can be re-included: git never looks inside an excluded directory)
+artifacts/*
+!artifacts/.gitkeep
